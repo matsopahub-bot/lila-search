@@ -1,16 +1,33 @@
 #!/bin/sh
 
-REMOTE=$1
-REMOTE_DIR="/home/lila-search-cli"
+# Exit immediately if a command exits with a non-zero status (-e)
+# Treat unset variables as an error when substituting (-u)
+set -eu
 
-echo "Deploy to server $REMOTE:$REMOTE_DIR"
-
-sbt ";ingestor-cli/stage;exit"
-if [ $? != 0 ]; then
-	echo "Deploy canceled"
+# Verify that the remote server argument is provided
+if [ -z "${1:-}" ]; then
+	echo "Error: Remote server target is not specified!"
+	echo "Usage: $0 user@server_ip"
 	exit 1
 fi
 
+REMOTE=$1
+REMOTE_DIR="/home/lila-search-cli"
+
+echo "Deploying to server $REMOTE:$REMOTE_DIR"
+
+echo "=== [1/3] Building project with SBT ==="
+sbt ";ingestor-cli/stage;exit"
+
+stage="modules/ingestor-cli/target/universal/stage"
+
+# Double-check that the build artifact directory actually exists before syncing
+if [ ! -d "$stage" ]; then
+	echo "Error: Stage directory $stage does not exist. Deploy canceled."
+	exit 1
+fi
+
+# Optimized rsync options (removed the heavily throttling '--checksum' flag)
 RSYNC_OPTIONS=" \
   --archive \
   --no-o --no-g \
@@ -18,14 +35,14 @@ RSYNC_OPTIONS=" \
   --delete \
   --progress \
   --compress \
-  --checksum \
   --verbose \
-  --exclude RUNNING_PID \
-  --exclude '.git/'"
+  --exclude=RUNNING_PID \
+  --exclude='.git/'"
 
-stage="modules/ingestor-cli/target/universal/stage"
-include="$stage/bin $stage/lib"
-rsync_command="rsync $RSYNC_OPTIONS $include $REMOTE:$REMOTE_DIR"
-echo "$rsync_command"
-$rsync_command
-echo "rsync complete"
+echo "=== [2/3] Syncing files via rsync ==="
+echo "Running: rsync $RSYNC_OPTIONS $stage/bin $stage/lib $REMOTE:$REMOTE_DIR"
+
+# Explicitly passing paths to prevent shell expansion issues
+rsync $RSYNC_OPTIONS "$stage/bin" "$stage/lib" "$REMOTE:$REMOTE_DIR"
+
+echo "=== [3/3] Deploy complete ==="
